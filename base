@@ -1,7 +1,7 @@
 extends Node2D
 
 @onready var tide_1: Sprite2D = %Tide1
-
+@onready var echo_scene = preload("res://base_echo.tscn")
 
 const SAVE_PATH = "user://reverie_archive.save"
 
@@ -216,8 +216,19 @@ func update_ui():
             
     if has_node("%FightButton"):
         %FightButton.disabled = deployed_echoes.size() == 0 or is_fighting
-            
+        
+        
+        # Show/Hide hatchery bars based on player level
+    var max_slots = get_max_hatchery_slots()
+    
+    if has_node("%HatcheryBar1"): %HatcheryBar1.visible = (max_slots >= 1)
+    if has_node("%HatcheryBar2"): %HatcheryBar2.visible = (max_slots >= 2)
+    if has_node("%HatcheryBar3"): %HatcheryBar3.visible = (max_slots >= 3)
+    if has_node("%HatcheryBar4"): %HatcheryBar4.visible = (max_slots >= 4)
     update_synergy_label()
+    
+    # Tell all world habitats to refresh their visual wisps
+    get_tree().call_group("habitats", "refresh_wisps")
 
 func update_synergy_label():
     var tags = {"Tide": 0, "Tremor": 0, "Pyre": 0, "Zephyr": 0}
@@ -246,30 +257,97 @@ func gain_exp(amount):
         print("LEVEL UP! You are now Level ", player_level)
 
 func find_free_slot():
-    var total_slots = 3
-    if upgrades_unlocked.slot_4: total_slots = 4
+    var total_slots = get_max_hatchery_slots()
+    
     for i in range(total_slots):
-        if hatchery_slots_active[i] == false: return i
-    return -1
-
+        if hatchery_slots_active[i] == false:
+            return i # Found a free one!
+            
+    return -1 # This MUST be outside the 'for' loop
+    
+    
 func start_job(slot_idx, res_name, dur):
     hatchery_slots_active[slot_idx] = true
-    var bar_path = "%HatcheryBar" + str(slot_idx + 1)
-    if has_node(bar_path):
-        var bar = get_node(bar_path)
-        bar.value = 0
-        var tw = create_tween()
-        tw.tween_property(bar, "value", 100, dur)
-        await get_tree().create_timer(dur).timeout
-        tw.kill()
-        bar.value = 0
-        
-        if not res_name in discovered_echoes: discovered_echoes.append(res_name)
-        my_collection.append(res_name) 
-        gain_exp(25)
-        hatchery_slots_active[slot_idx] = false
-        update_ui()
+    
+    # 1. Spawn & Grow (Your current working code)
+    var new_wisp = echo_scene.instantiate()
+    var book_container = get_node("%HatcheryBooks") 
+    book_container.add_child(new_wisp)
+    
+    var marker = get_node("%SlotPos" + str(slot_idx + 1))
+    new_wisp.position = marker.position
+    new_wisp.scale = Vector2(0.1, 0.1)
+    
+    var grow_tween = create_tween()
+    grow_tween.tween_property(new_wisp, "scale", Vector2(1.5, 1.5), dur)
+    
+    # 2. WAIT for growth timer to finish
+# ... (Wait for growth timer to finish) ...
+    await get_tree().create_timer(dur).timeout
+    print("Growth finished! Looking for a home for: ", res_name) # DEBUG
+    
+    # 3. THE DRIFT
+   # ... (Wait for growth timer to finish) ...
+    await get_tree().create_timer(dur).timeout
+    
+    var target_node = null
+    if "Tide" in res_name:
+        target_node = get_node_or_null("%tide 1 CON")
+    elif "Pyre" in res_name:
+        target_node = get_node_or_null("%pyre 1 CON")
+        if target_node:
+            print("Pyre found! Its real world position is: ", target_node.global_position)
+        else:
+            print("Pyre NOT found! Check the Unique Name (%) and Spelling.")
 
+    if target_node != null:
+        # --- THE FIX: FREEDOM! ---
+        # This removes the wisp from the 'Books' and puts it in the main scene
+        # 'true' keeps it at the same visual spot during the swap
+        new_wisp.reparent(get_tree().root.get_child(0), true)
+        
+        # Now that it's in the world, fix the 'squish'
+        new_wisp.scale = Vector2(1.5, 1.5) 
+
+        var drift_tw = create_tween()
+        drift_tw.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+        
+        # Fly to the habitat
+        drift_tw.tween_property(new_wisp, "global_position", target_node.global_position, 1.5)
+        # Fade out slightly later or slower so we can see it arrive
+        drift_tw.parallel().tween_property(new_wisp, "modulate:a", 0.0, 1.8)
+        
+        await drift_tw.finished
+    
+    # 4. CLEANUP
+    new_wisp.queue_free() 
+    # ... (Rest of your code)
+    
+    
+    # ... after the drift and queue_free ...
+    
+    # 1. Add to the actual collection
+    my_collection.append(res_name) 
+    
+    # 2. Tell the specific habitat to update its look
+    if target_node and target_node.has_method("refresh_visuals"):
+        # Count how many of this type we now have
+        var count = 0
+        for item in my_collection:
+            if target_node.habitat_type in item:
+                count += 1
+                
+ 
+        
+        target_node.refresh_visuals(count)
+    
+    hatchery_slots_active[slot_idx] = false
+    update_ui()
+    
+    my_collection.append(res_name) 
+    hatchery_slots_active[slot_idx] = false
+    update_ui()
+    
 func _on_shop_button_pressed(): 
     var slot = find_free_slot()
     if slot == -1 or ink_count < 50: return
@@ -285,7 +363,17 @@ func _on_shop_button_pressed():
 
 func _on_weave_button_pressed():
     var slot = find_free_slot()
-    if slot == -1 or parent_a_index == -1 or parent_b_index == -1: return
+    
+    # NEW: Safety check for 'null' just in case
+    if slot == null or slot == -1:
+        print("Archive is full! Cannot weave right now.")
+        return 
+        
+    if parent_a_index == -1 or parent_b_index == -1:
+        print("Select two Echoes to weave!")
+        return
+    
+    # ... the rest of your weave code ...
         
     var p1 = get_base_name(my_collection[parent_a_index])
     var p2 = get_base_name(my_collection[parent_b_index])
@@ -713,3 +801,45 @@ func _on_pyre_1_area_2d_input_event(_viewport, event, _shape_idx):
         print("I CLICKED THE FORGE!")
         %SanctuaryUI.visible = true
         %TabContainer.current_tab = 1
+        update_ui()
+
+func _on_buy_tide_button_pressed():
+    var slot = find_free_slot()
+    if slot != -1:
+        # Check this line! It should say "Tide Echo"
+        start_job(slot, "Tide Echo", 5.0) 
+
+func _on_buy_pyre_button_pressed():
+    var slot = find_free_slot()
+    if slot != -1:
+        # Check this line! It should say "Pyre Echo"
+        start_job(slot, "Pyre Echo", 5.0)
+        
+        
+        
+func get_max_hatchery_slots():
+    var slots = 1
+    if player_level >= 3: slots = 2
+    if player_level >= 10: slots = 3
+    if player_level >= 25: slots = 4
+    return slots
+    
+func refresh_habitat_visuals(habitat_node):
+    # 1. Clear out old wisps so they don't stack up
+    for child in habitat_node.get_children():
+        if child.is_in_group("resident_wisps"):
+            child.queue_free()
+            
+    # 2. Look up how many Echoes are in this habitat's backend list
+    var type = habitat_node.get_meta("habitat_type")
+    var echo_list = library_exhibits[type]
+    
+    # 3. Spawn a permanent wisp for every Echo in the list
+    for i in range(echo_list.size()):
+        var wisp = echo_scene.instantiate()
+        habitat_node.add_child(wisp)
+        wisp.add_to_group("resident_wisps")
+        
+        # Give them a random little offset so they aren't all in one spot
+        wisp.position = Vector2(randf_range(-50, 50), randf_range(-50, 50))
+        wisp.modulate.a = 0.7 # Make them slightly see-through/ghostly
