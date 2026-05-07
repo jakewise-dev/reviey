@@ -1,1001 +1,137 @@
+@tool
 extends Node2D
-signal ui_updated
+
+@export_group("Settings")
+@export var habitat_type: String = "Tide" # Set to "Tide" or "Pyre"
+
+@export_group("Visuals")
+@export var tree_texture: Texture2D
+@export var glow_color: Color = Color(1, 1, 1, 1) # White by default
+@export var particle_color: Color = Color(1, 1, 1, 1)
+@export_group("Setup")
+@export var wisp_scene: PackedScene = preload("res://base_echo.tscn")
+
+var last_seen_wisp_count = -1 # Add this variable at the top of the script!
 
 
-@onready var tide_1: Sprite2D = %Tide1
-@onready var echo_scene = preload("res://base_echo.tscn")
-
-const SAVE_PATH = "user://reverie_archive.save"
-
-# --- 1. DATA & ECONOMY ---
-var ink_count = 200 
-var max_ink_capacity = 5000 
-var current_total_rate = 0.0
-
-
-
-# --- NEW: Wisp Placement Trackers ---
-var active_waiting_wisp_name = ""
-var active_waiting_wisp_node = null
-
-var player_level = 1
-var player_exp = 0
-var exp_to_next_level = 100
-
-var weave_speed_mult = 1.0 
-var upgrades_unlocked = {"slot_4": false, "speed": false, "board": false}
-var upgrade_costs = {"slot_4": 1500, "speed": 3000, "board": 6000}
-
-var tag_colors = {"Tide": "🌊 Tide", "Tremor": "🪨 Tremor", "Pyre": "🔥 Pyre", "Zephyr": "🌬️ Zephyr"}
-
-var echo_database = {
-	"Tide Echo": {"hp": 100, "atk": 5, "time": 5, "tags": ["Tide"], "ink_rate": 1, "color": Color.CORNFLOWER_BLUE, "lore": "A manifestation of the subconscious flow. It is calm, but relentless."},
-	"Tremor Echo": {"hp": 80, "atk": 8, "time": 5, "tags": ["Tremor"], "ink_rate": 1, "color": Color.GOLDENROD, "lore": "A solid, heavy memory. It grounds the Archive to reality."},
-	"Pyre Echo": {"hp": 70, "atk": 12, "time": 5, "tags": ["Pyre"], "ink_rate": 1, "color": Color.ORANGE_RED, "lore": "Intense passion burning brightly. It consumes ink quickly."},
-	"Zephyr Echo": {"hp": 90, "atk": 6, "time": 5, "tags": ["Zephyr"], "ink_rate": 2, "color": Color.LIGHT_CYAN, "lore": "A fleeting whim. Hard to hold onto, but moves with great speed."},
-	"The Shiver": {"hp": 130, "atk": 18, "time": 15, "tags": ["Tide", "Tremor"], "ink_rate": 5, "color": Color.AQUAMARINE, "lore": "A cold realization that shakes the foundation of the mind."},
-	"The Faultline": {"hp": 160, "atk": 14, "time": 15, "tags": ["Tremor", "Tide"], "ink_rate": 5, "color": Color.CHOCOLATE, "lore": "A mental crack. Pressure built up over years, finally snapping."},
-	"Scalding Regret": {"hp": 110, "atk": 25, "time": 15, "tags": ["Tide", "Pyre"], "ink_rate": 6, "color": Color.INDIAN_RED, "lore": "A memory that burns to touch. It hurts the creator to remember."},
-	"Molten Core": {"hp": 180, "atk": 25, "time": 20, "tags": ["Tremor", "Pyre"], "ink_rate": 8, "color": Color.DARK_ORANGE, "lore": "Burning trauma trapped under a heavy layer of stoicism."},
-	"The Haze": {"hp": 120, "atk": 15, "time": 15, "tags": ["Tremor", "Zephyr"], "ink_rate": 6, "color": Color.WHEAT, "lore": "A crumbling memory turning to dust in the wind."},
-	"Breezy Passion": {"hp": 100, "atk": 20, "time": 15, "tags": ["Pyre", "Zephyr"], "ink_rate": 7, "color": Color.LIGHT_STEEL_BLUE, "lore": "A light obsession. A hobby picked up and dropped in a week."}
-}
-
-var weighted_recipes = {
-	"Tide Echo + Tremor Echo": {"The Shiver": 50, "The Faultline": 50},
-	"Tide Echo + Pyre Echo": {"Scalding Regret": 100},
-	"Tremor Echo + Pyre Echo": {"Molten Core": 100},
-	"Pyre Echo + Zephyr Echo": {"Breezy Passion": 100}
-}
-
-# --- 2. GAME STATE (THE 3 PILLARS) ---
-
-var hatchery_slots_active = [false, false, false, false]
-
-var my_collection = [] # The Dummy Variable is back to stop errors!
-var discovered_echoes = []
-
-var library_exhibits = {
-	"Tide": {"name": "Tide Pedestal", "type": "Tide", "level": 1, "contents": [], "capacity": 3, "ink_stored": 0.0, "ink_cap": 200, "unlocked": true, "cost": 0},
-	"Pyre": {"name": "Pyre Hearth", "type": "Pyre", "level": 1, "contents": [], "capacity": 3, "ink_stored": 0.0, "ink_cap": 200, "unlocked": true, "cost": 0},
-	"Tremor": {"name": "Tremor Monolith", "type": "Tremor", "level": 1, "contents": [], "capacity": 3, "ink_stored": 0.0, "ink_cap": 300, "unlocked": false, "cost": 800},
-	"Zephyr": {"name": "Zephyr Chimes", "type": "Zephyr", "level": 1, "contents": [], "capacity": 3, "ink_stored": 0.0, "ink_cap": 400, "unlocked": false, "cost": 1500}
-}
-
-var deployed_echoes = [] 
-var max_board_size = 3
-
-var boss_atk = 15
-var boss_level = 1
-var boss_hp = 150
-var is_fighting = false
-
-var parent_a_index = -1
-var parent_b_index = -1
-var selected_echo_name = "" 
-var library_roster_selected_name = ""
-var board_selected_index = -1
-
-var inspected_exhibit_key = ""
-var selected_exhibit_content_index = -1
-var codex_selected_name = ""
-
-# --- 3. INITIALIZATION ---
 
 func _ready():
-	randomize()
-	auto_wire_signals()
-	update_ui()
+    # 1. Apply the visuals we set in the Inspector
+    if tree_texture:
+        %TreeSprite.texture = tree_texture
+    %Glow.color = glow_color
+    %Particles1.modulate = particle_color
+    %Particles2.modulate = particle_color
+    
+    # 2. Hide the icon at start
+    %CollectIcon.visible = false
 
-func auto_wire_signals():
-	var btns = {
-		"%ShopButton": _on_shop_button_pressed,
-		"%WeaveButton": _on_weave_button_pressed,
-		"%CollectButton": _on_collect_button_pressed,
-		"%DeployButton": _on_deploy_button_pressed,
-		"%RecallButton": _on_recall_button_pressed,
-		"%FightButton": _on_fight_button_pressed,
-		"%ExileButton": _on_exile_button_pressed,
-		"%MergeButton": _on_merge_button_pressed,
-		"%ExhibitTideButton": _on_tide_exhibit_pressed,
-		"%ExhibitPyreButton": _on_pyre_exhibit_pressed,
-		"%ExhibitTremorButton": _on_tremor_exhibit_pressed,
-		"%ExhibitZephyrButton": _on_zephyr_exhibit_pressed,
-		"%RecallFromExhibitButton": _on_recall_from_exhibit_button_pressed,
-		"%SaveButton": save_game,
-		"%LoadButton": load_game
-	}
-	
-	for path in btns:
-		if has_node(path):
-			var b = get_node(path)
-			for c in b.pressed.get_connections():
-				b.pressed.disconnect(c.callable)
-			b.pressed.connect(btns[path])
-	
-	var lists = {
-		"%ItemList": _on_item_list_item_selected,
-		"%LibraryRoster": _on_library_roster_item_selected,
-		"%BoardList": _on_board_list_item_selected,
-		"%ExhibitContentsList": _on_exhibit_contents_list_item_selected,
-		"%CodexList": _on_codex_list_item_selected
-	}
-	
-	for path in lists:
-		if has_node(path):
-			var l = get_node(path)
-			if l.item_selected.is_connected(lists[path]):
-				l.item_selected.disconnect(lists[path])
-			l.item_selected.connect(lists[path])
+    # 3. Connect to the core (your existing code)
+    await get_tree().process_frame
+    var core = get_tree().root.find_child("ReverieCore", true, false)
+    if core:
+        core.ui_updated.connect(_on_core_updated)
+        _on_core_updated()
 
-func get_base_name(f):
-	return f.split(" (")[0]
 
-# --- 4. UI & DETAILS ---
-
-func update_exhibit_button(btn_path, key):
-	if not has_node(btn_path): return
-	var data = library_exhibits[key]
-	var btn = get_node(btn_path)
-	
-	if not data["unlocked"]:
-		btn.text = "Restore " + data["name"] + "\nCost: " + str(data["cost"]) + " Ink"
-	else:
-		var t = data["name"] + "\n"
-		t += "Echoes: " + str(data["contents"].size()) + "/" + str(data["capacity"]) + "\n"
-		t += "Ink: " + str(int(data["ink_stored"])) + "/" + str(data["ink_cap"])
-		btn.text = t
-
-func update_ui():
-	if is_fighting: return 
-		
-	if has_node("%InkLabel"):
-		%InkLabel.text = "Ink: " + str(int(ink_count)) + " | Level: " + str(player_level) + " (" + str(player_exp) + "/" + str(exp_to_next_level) + " XP)"
-		
-	if has_node("%BossLabel"):
-		%BossLabel.text = "Boss Lv. " + str(boss_level) + " | HP: " + str(boss_hp)
-	
-	if has_node("%ItemList"):
-		%ItemList.clear()
-		#for item in my_collection: %ItemList.add_item(item)
-			
-	if has_node("%LibraryRoster"):
-		%LibraryRoster.clear()
-		#for item in my_collection: %LibraryRoster.add_item(item)
-			
-	if has_node("%BoardList"):
-		%BoardList.clear()
-		for item in deployed_echoes: %BoardList.add_item(item)
-
-	if has_node("%CodexList"):
-		%CodexList.clear()
-		var all_keys = echo_database.keys()
-		for key in all_keys:
-			if key in discovered_echoes: %CodexList.add_item(key)
-			else: %CodexList.add_item("???")
-				
-	if codex_selected_name != "" and has_node("%CodexLoreLabel"):
-		if codex_selected_name in discovered_echoes:
-			var d = echo_database[codex_selected_name]
-			var tags_text = ""
-			for t in d.tags: tags_text += tag_colors[t] + " "
-			if has_node("%CodexPortrait"): %CodexPortrait.color = d.color
-			%CodexLoreLabel.text = codex_selected_name + "\n" + tags_text + "\n\nBase HP: " + str(d.hp) + " | Base ATK: " + str(d.atk) + "\nInk Rate: " + str(d.ink_rate) + "/s\n\nLORE: " + d.lore
-		else:
-			if has_node("%CodexPortrait"): %CodexPortrait.color = Color.BLACK
-			%CodexLoreLabel.text = "???\n\nThis Echo has not been discovered yet."
-			
-	if has_node("%ExhibitContentsList"):
-		%ExhibitContentsList.clear()
-		if inspected_exhibit_key != "":
-			var current_hab = library_exhibits[inspected_exhibit_key]
-			var cap = current_hab["capacity"]
-			var contents = current_hab["contents"]
-			
-			# 1. Draw the Filled Slots
-			for echo in contents:
-				%ExhibitContentsList.add_item("🔮 " + echo)
-				
-			# 2. Draw the Empty Slots (The DragonVale way!)
-			var empty_slots = cap - contents.size()
-			for i in range(empty_slots):
-				%ExhibitContentsList.add_item("[ + Empty Slot ]")
-			
-
-	update_exhibit_button("%ExhibitPyreButton", "Pyre")
-	update_exhibit_button("%ExhibitTremorButton", "Tremor")
-	update_exhibit_button("%ExhibitZephyrButton", "Zephyr")
-	
-	
-	if selected_echo_name != "" and has_node("%StatsLabel"):
-		var base = get_base_name(selected_echo_name)
-		if echo_database.has(base):
-			var d = echo_database[base]
-			if has_node("%Portrait"): %Portrait.color = d.color
-			var tags_text = ""
-			for t in d.tags: tags_text += tag_colors[t] + " "
-			%StatsLabel.text = "--- ARCHIVE ---\n" + selected_echo_name + "\nRESONANCE: " + tags_text + "\nINK: " + str(d.ink_rate) + "/s\nHP: " + str(d.hp) + " | ATK: " + str(d.atk)
-			check_for_merges()
-
-	var p1 = "..."
-	if parent_a_index != -1 and parent_a_index < my_collection.size(): p1 = my_collection[parent_a_index]
-	var p2 = "..."
-	if parent_b_index != -1 and parent_b_index < my_collection.size(): p2 = my_collection[parent_b_index]
-		
-	if has_node("%DetailsLabel"):
-		%DetailsLabel.text = "Weaving: " + p1 + " + " + p2
-			
-	if has_node("%FightButton"):
-		%FightButton.disabled = deployed_echoes.size() == 0 or is_fighting
-		
-	# Show/Hide hatchery bars based on player level
-	var max_slots = get_max_hatchery_slots()
-	
-	if has_node("%HatcheryBar1"): %HatcheryBar1.visible = (max_slots >= 1)
-	if has_node("%HatcheryBar2"): %HatcheryBar2.visible = (max_slots >= 2)
-	if has_node("%HatcheryBar3"): %HatcheryBar3.visible = (max_slots >= 3)
-	if has_node("%HatcheryBar4"): %HatcheryBar4.visible = (max_slots >= 4)
-	update_synergy_label()
-	
-	# 🌟 NEW: Flawless World Sync!
-	sync_world_wisps()
-	
-	print("RINGING THE BELL") # Add this for debugging!
-	ui_updated.emit()
-
-func update_synergy_label():
-	var tags = {"Tide": 0, "Tremor": 0, "Pyre": 0, "Zephyr": 0}
-	var total_atk = 0
-	for item in deployed_echoes:
-		var base = get_base_name(item)
-		if echo_database.has(base):
-			var d = echo_database[base]
-			total_atk += d.atk
-			for t in d.tags:
-				if tags.has(t): tags[t] += 1
-	if tags["Pyre"] >= 3:
-		total_atk = int(total_atk * 1.5)
-		
-	if has_node("%SynergyLabel"):
-		%SynergyLabel.text = "Field: " + str(deployed_echoes.size()) + "/" + str(max_board_size) + " | ATK: " + str(total_atk)
-
-# 🌟 NEW: The World Sync Function
-func sync_world_wisps():
-	# 1. Sync the Tide Tree
-	var tide_tree = get_node_or_null("%tide 1 CON")
-	if tide_tree and tide_tree.has_method("refresh_visuals"):
-		var tide_count = library_exhibits["Tide"]["contents"].size()
-		tide_tree.refresh_visuals(tide_count)
-		
-	# 2. Sync the Pyre Forge
-	var pyre_forge = get_node_or_null("%pyre 1 CON")
-	if pyre_forge and pyre_forge.has_method("refresh_visuals"):
-		var pyre_count = library_exhibits["Pyre"]["contents"].size()
-		pyre_forge.refresh_visuals(pyre_count)
-
-# --- 5. HATCHERY & EXP ---
-
-func gain_exp(amount):
-	player_exp += amount
-	if player_exp >= exp_to_next_level:
-		player_level += 1
-		player_exp -= exp_to_next_level
-		exp_to_next_level = int(exp_to_next_level * 1.5)
-		print("LEVEL UP! You are now Level ", player_level)
-
-func find_free_slot():
-	var total_slots = get_max_hatchery_slots()
-	for i in range(total_slots):
-		if hatchery_slots_active[i] == false:
-			return i
-	return -1 
-	
-func start_job(slot_idx, res_name, dur):
-	hatchery_slots_active[slot_idx] = true
-	
-	# 1. Spawn & Grow
-	var new_wisp = echo_scene.instantiate()
-	var book_container = get_node("%HatcheryBooks") 
-	book_container.add_child(new_wisp)
-	# Set the color based on the database
-	var base = get_base_name(res_name)
-	if echo_database.has(base):
-		new_wisp.modulate = echo_database[base].color
-	
-	var marker = get_node("%SlotPos" + str(slot_idx + 1))
-	new_wisp.position = marker.position
-	new_wisp.scale = Vector2(0.1, 0.1)
-	
-	var grow_tween = create_tween()
-	grow_tween.tween_property(new_wisp, "scale", Vector2(1.5, 1.5), dur)
-	
-	await grow_tween.finished
-	print("Hatch complete! ", res_name, " is waiting on the book.")
-	
-	# 2. Add secret tags so the wisp remembers who it is
-	new_wisp.set_meta("echo_name", res_name)
-	new_wisp.set_meta("slot_idx", slot_idx)
-	new_wisp.add_to_group("waiting_wisps")
-	
-	# --- NEW: Make it clickable! ---
-	var area = new_wisp.get_node_or_null("Area2D")
-	if area:
-		area.input_event.connect(_on_waiting_wisp_clicked.bind(res_name, slot_idx, new_wisp))
-	# -------------------------------
-	
-	# 3. The "Ready" Bounce Animation
-	var bounce_tw = create_tween().set_loops()
-	bounce_tw.tween_property(new_wisp, "position:y", new_wisp.position.y - 15, 1.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	bounce_tw.tween_property(new_wisp, "position:y", new_wisp.position.y, 1.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	
-# --- NEW: Make it clickable! ---
-	var wisp_area = new_wisp.find_child("Area2D", true, false)
-	if wisp_area:
-		print("✅ Area2D FOUND! Wisp is ready to be clicked.")
-		wisp_area.input_event.connect(_on_waiting_wisp_clicked.bind(res_name, slot_idx, new_wisp))
-	else:
-		print("❌ ERROR: Still can't find it! Check node name!")
-	# -------------------------------
-	
-	
-	update_ui()
-	
-func _on_shop_button_pressed(): 
-	var slot = find_free_slot()
-	if slot == -1 or ink_count < 50: return
-	ink_count -= 50
-	
-	var pool = ["Tide Echo", "Pyre Echo"]
-	if player_level >= 3: pool.append("Tremor Echo")
-	if player_level >= 5: pool.append("Zephyr Echo")
-		
-	var result = pool[randi() % pool.size()]
-	start_job(slot, result, 5.0)
-	update_ui()
-
-func _on_weave_button_pressed():
-	var slot = find_free_slot()
-	
-	if slot == null or slot == -1:
-		print("Archive is full! Cannot weave right now.")
-		return 
-		
-	if parent_a_index == -1 or parent_b_index == -1:
-		print("Select two Echoes to weave!")
-		return
-		
-	var p1 = get_base_name(my_collection[parent_a_index])
-	var p2 = get_base_name(my_collection[parent_b_index])
-	var key = p1 + " + " + p2
-	var alt = p2 + " + " + p1
-	var res = ""
-	
-	if weighted_recipes.has(key): res = pick_weighted_result(weighted_recipes[key])
-	elif weighted_recipes.has(alt): res = pick_weighted_result(weighted_recipes[alt])
-	else: res = p1 if randf() > 0.5 else p2
-			
-	var final_time = echo_database[res]["time"] * weave_speed_mult
-	start_job(slot, res, final_time)
-	
-	parent_a_index = -1
-	parent_b_index = -1
-	selected_echo_name = ""
-	update_ui()
-	
-	
-func _on_waiting_wisp_clicked(viewport, event, shape_idx, echo_name, slot_idx, wisp_node):
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		
-		# --- THE MAGIC SHIELD (Stops the laser beam!) ---
-		viewport.set_input_as_handled() 
-		# ------------------------------------------------
-		
-		print("Opening decision menu for: ", echo_name)
-		
-		# 1. Remember who we just clicked
-		active_waiting_wisp_name = echo_name
-		active_waiting_wisp_node = wisp_node
-		
-		# 2. Show the popup!
-		if has_node("%DecisionPopup"):
-			%DecisionPopup.visible = true
-# --- 6. VISUAL LIBRARY LOGIC ---
-
-func _on_library_roster_item_selected(idx):
-	pass
-	# if idx < my_collection.size():
-	# 	library_roster_selected_name = my_collection[idx]
-
-func try_place_in_exhibit(exhibit_key):
-	if library_roster_selected_name == "": return 
-		
-	var exhibit_data = library_exhibits[exhibit_key]
-	var base_name = get_base_name(library_roster_selected_name)
-	var echo_data = echo_database[base_name]
-	
-	if not exhibit_data["type"] in echo_data.tags: return
-	if exhibit_data["contents"].size() >= exhibit_data["capacity"]: return
-		
-	my_collection.erase(library_roster_selected_name)
-	exhibit_data["contents"].append(library_roster_selected_name)
-	library_roster_selected_name = ""
-
-func handle_exhibit_click(key):
-	var data = library_exhibits[key]
-	if not data["unlocked"]:
-		if ink_count >= data["cost"]:
-			ink_count -= data["cost"]
-			data["unlocked"] = true
-			print("Restored ", data["name"], "!")
-		else:
-			print("Not enough ink to restore ", data["name"])
-		update_ui()
-		return
-		
-	inspected_exhibit_key = key
-	selected_exhibit_content_index = -1
-	if library_roster_selected_name != "":
-		try_place_in_exhibit(key)
-	update_ui()
-
-func _on_tide_exhibit_pressed(): handle_exhibit_click("Tide")
-func _on_pyre_exhibit_pressed(): handle_exhibit_click("Pyre")
-func _on_tremor_exhibit_pressed(): handle_exhibit_click("Tremor")
-func _on_zephyr_exhibit_pressed(): handle_exhibit_click("Zephyr")
-
-func _on_exhibit_contents_list_item_selected(idx):
-	if inspected_exhibit_key == "": return
-	
-	var current_hab = library_exhibits[inspected_exhibit_key]
-	var contents = current_hab["contents"]
-	
-	if idx < contents.size():
-		# --- CLICKED A FILLED SLOT ---
-		var clicked_echo = contents[idx]
-		print("✅ SUCCESS: You clicked on ", clicked_echo, " in the Forge!")
-		
-		selected_exhibit_content_index = idx
-		
-		# 1. Force the Archive Stat Card to update
-		selected_echo_name = clicked_echo 
-		
-		# 2. Force the Codex Lore Card to update too!
-		codex_selected_name = get_base_name(clicked_echo)
-		
-		# 3. Jump to the Library/Stats tab (Tab 3)
-		%TabContainer.current_tab = 3
-		
-		# 4. Refresh everything
-		update_ui()
-		
-	else:
-		# --- CLICKED AN EMPTY SLOT ---
-		selected_exhibit_content_index = -1
-		print("Empty slot clicked! Select an Echo from your Roster to add it.")
-		
-func _on_recall_from_exhibit_button_pressed():
-	if inspected_exhibit_key == "" or selected_exhibit_content_index == -1: return
-	var exhibit = library_exhibits[inspected_exhibit_key]
-	if selected_exhibit_content_index < exhibit["contents"].size():
-		var unit = exhibit["contents"][selected_exhibit_content_index]
-		exhibit["contents"].remove_at(selected_exhibit_content_index)
-		my_collection.append(unit)
-		selected_exhibit_content_index = -1
-		update_ui()
-
-func _process(delta):
-	var total_ready_to_collect = 0.0
-	for key in library_exhibits.keys():
-		var exhibit = library_exhibits[key]
-		if not exhibit["unlocked"]: continue
-		
-		var exhibit_rate = 0.0
-		for echo_name in exhibit["contents"]:
-			var base = get_base_name(echo_name)
-			if echo_database.has(base):
-				exhibit_rate += echo_database[base].ink_rate
-				
-		if exhibit["ink_stored"] < exhibit["ink_cap"]:
-			exhibit["ink_stored"] += exhibit_rate * delta
-			if exhibit["ink_stored"] > exhibit["ink_cap"]:
-				exhibit["ink_stored"] = exhibit["ink_cap"]
-				
-		total_ready_to_collect += exhibit["ink_stored"]
-		
-	if has_node("%CollectButton"):
-		%CollectButton.text = "Collect (" + str(int(total_ready_to_collect)) + ")"
-
-func _on_collect_button_pressed():
-	var total_collected = 0
-	for key in library_exhibits.keys():
-		var exhibit = library_exhibits[key]
-		if not exhibit["unlocked"]: continue
-		total_collected += exhibit["ink_stored"]
-		exhibit["ink_stored"] = 0.0
-	ink_count += int(total_collected)
-	update_ui()
-
-# --- 7. TFT COMBAT LOGIC ---
-func _on_deploy_button_pressed():
-	if selected_echo_name != "" and selected_echo_name in my_collection:
-		if deployed_echoes.size() < max_board_size:
-			my_collection.erase(selected_echo_name)
-			deployed_echoes.append(selected_echo_name)
-			selected_echo_name = ""
-			update_ui()
-
-func _on_recall_button_pressed():
-	if board_selected_index != -1 and board_selected_index < deployed_echoes.size():
-		my_collection.append(deployed_echoes[board_selected_index])
-		deployed_echoes.remove_at(board_selected_index)
-		board_selected_index = -1
-		update_ui()
-
-func post_to_log(msg: String):
-	if has_node("%BattleLog"):
-		var log_node = get_node("%BattleLog")
-		log_node.append_text(msg + "\n")
-
-func _on_fight_button_pressed():
-	if is_fighting or deployed_echoes.size() == 0: return
-	is_fighting = true
-	if has_node("%FightButton"): %FightButton.disabled = true
-	
-	var current_hp = 0
-	var current_atk = 0
-	var current_boss_atk = boss_atk
-	var tags = {"Tide": 0, "Tremor": 0, "Pyre": 0, "Zephyr": 0}
-	
-	for i in deployed_echoes:
-		var d = echo_database[get_base_name(i)]
-		current_hp += d.hp
-		current_atk += d.atk
-		for t in d.tags: if tags.has(t): tags[t] += 1
-	
-	var heal_per_turn = tags["Tide"] * 10      
-	var shield_block = tags["Tremor"] * 5      
-	var burn_per_turn = tags["Pyre"] * 15      
-	
-	var active_boss_hp = boss_hp
-	var active_player_hp = current_hp
-	var max_player_hp = current_hp
-	
-	if has_node("%BossHPBar"):
-		%BossHPBar.max_value = boss_hp
-		%BossHPBar.value = active_boss_hp
-	
-	if has_node("%BattleLog"): 
-		%BattleLog.text = "" 
-	post_to_log("[color=yellow]--- BATTLE START (LV " + str(boss_level) + ") ---[/color]")
-	
-	while active_boss_hp > 0 and active_player_hp > 0:
-		active_boss_hp -= current_atk
-		post_to_log("Board attacks for [color=yellow]" + str(current_atk) + "[/color] damage.")
-		
-		if burn_per_turn > 0:
-			active_boss_hp -= burn_per_turn
-			post_to_log("🔥 Pyre applies [color=orange]" + str(burn_per_turn) + " Burn[/color] damage!")
-		
-		if has_node("%BossHPBar"): %BossHPBar.value = active_boss_hp
-		spawn_damage_text(current_atk + burn_per_turn, %BossLabel.global_position + Vector2(50,0), Color.YELLOW)
-		apply_shake(%BossLabel, 10.0)
-		await get_tree().create_timer(0.4).timeout
-		
-		if active_boss_hp <= 0: break
-			
-		var actual_boss_dmg = max(0, current_boss_atk - shield_block)
-		active_player_hp -= actual_boss_dmg
-		
-		if shield_block > 0:
-			post_to_log("Boss attacks for [color=red]" + str(actual_boss_dmg) + "[/color] (🪨 Blocked " + str(shield_block) + ").")
-		else:
-			post_to_log("Boss attacks for [color=red]" + str(actual_boss_dmg) + "[/color] damage.")
-		
-		if heal_per_turn > 0 and active_player_hp > 0:
-			active_player_hp += heal_per_turn
-			if active_player_hp > max_player_hp: active_player_hp = max_player_hp
-			post_to_log("🌊 Tide heals the board for [color=green]" + str(heal_per_turn) + "[/color] HP!")
-			
-		spawn_damage_text(actual_boss_dmg, Vector2(200, 400), Color.RED)
-		apply_shake(self, 5.0)
-		await get_tree().create_timer(0.4).timeout
-	
-	if active_boss_hp <= 0:
-		post_to_log("[color=green]--- VICTORY ---[/color]")
-		ink_count += 100 * boss_level
-		var exp_reward = 50 * boss_level
-		gain_exp(exp_reward)
-		
-		boss_level += 1
-		boss_hp = int(boss_hp * 1.5)
-		boss_atk = int(boss_atk * 1.2)
-		post_to_log("Gained " + str(exp_reward) + " EXP!")
-	else:
-		post_to_log("[color=red]--- DEFEAT ---[/color]")
-		post_to_log("Your board was wiped out.")
-		
-	is_fighting = false
-	if has_node("%FightButton"): %FightButton.disabled = false
-	update_ui()
-
-# --- 8. HELPERS ---
-func _on_item_list_item_selected(idx):
-	pass
-	# if idx < my_collection.size():
-	# 	selected_echo_name = my_collection[idx]
-	# 	if parent_a_index == -1: parent_a_index = idx
-	# 	elif parent_b_index == -1: parent_b_index = idx
-	# 	else: parent_a_index = idx; parent_b_index = -1
-	# 	update_ui()
-
-func _on_board_list_item_selected(idx):
-	if idx < deployed_echoes.size():
-		board_selected_index = idx
-		update_ui()
-
-func _on_codex_list_item_selected(idx):
-	var all_keys = echo_database.keys()
-	if idx < all_keys.size(): codex_selected_name = all_keys[idx]
-	update_ui()
-
-func _on_merge_button_pressed():
-	if selected_echo_name == "": return
-	var target = selected_echo_name
-	var count_found = 0
-	var next_collection = []
-	for i in my_collection:
-		if i == target:
-			if count_found < 3: count_found += 1
-			else: next_collection.append(i)
-		else: next_collection.append(i)
-	
-	my_collection = next_collection
-	var base = get_base_name(target)
-	var next_star_name = target.replace("(2-Star)", "(3-Star)") if "(2-Star)" in target else target + " (2-Star)"
-		
-	if not echo_database.has(next_star_name):
-		var old = echo_database[base]
-		echo_database[next_star_name] = {"hp": old.hp * 2, "atk": old.atk * 2, "time": old.time, "tags": old.tags, "ink_rate": old.ink_rate * 3, "color": old.color}
-	my_collection.append(next_star_name)
-	selected_echo_name = next_star_name
-	update_ui()
-
-func check_for_merges():
-	var count = 0
-	for i in my_collection:
-		if i == selected_echo_name: count += 1
-	if has_node("%MergeButton"):
-		%MergeButton.disabled = count < 3
-		%MergeButton.text = "MERGE" if count >= 3 else "NEED 3"
-
-func pick_weighted_result(dict):
-	var tw = 0
-	for w in dict.values(): tw += w
-	var r = randi() % tw
-	var current_sum = 0
-	for outcome in dict.keys():
-		current_sum += dict[outcome]
-		if r < current_sum: return outcome
-	return dict.keys()[0]
-
-func spawn_damage_text(v, p, c):
-	var l = Label.new()
-	l.text = str(v)
-	l.add_theme_color_override("font_color", c)
-	add_child(l)
-	l.global_position = p
-	var tw = create_tween().set_parallel(true)
-	tw.tween_property(l, "position", l.position + Vector2(0, -50), 0.5)
-	tw.tween_property(l, "modulate:a", 0.0, 0.5)
-	tw.chain().tween_callback(l.queue_free)
-
-func apply_shake(n, i):
-	var o = n.position
-	var tw = create_tween()
-	for j in range(4):
-		var offset = Vector2(randf_range(-i,i), randf_range(-i,i))
-		tw.tween_property(n, "position", o + offset, 0.05)
-	tw.tween_property(n, "position", o, 0.05)
-
-func _on_exile_button_pressed():
-	if selected_echo_name != "" and selected_echo_name in my_collection:
-		my_collection.erase(selected_echo_name)
-		selected_echo_name = ""
-		parent_a_index = -1
-		parent_b_index = -1
-		update_ui()
-
-# --- 9. SAVE & LOAD SYSTEM (WITH OFFLINE PROGRESS) ---
-
-func save_game():
-	var save_data = {
-		"ink_count": ink_count,
-		"player_level": player_level,
-		"player_exp": player_exp,
-		"exp_to_next_level": exp_to_next_level,
-		"my_collection": my_collection,
-		"discovered_echoes": discovered_echoes,
-		"library_exhibits": library_exhibits,
-		"deployed_echoes": deployed_echoes,
-		"boss_level": boss_level,
-		"boss_hp": boss_hp,
-		"boss_atk": boss_atk,
-		"upgrades_unlocked": upgrades_unlocked,
-		"last_save_time": Time.get_unix_time_from_system() 
-	}
-	var file = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
-	file.store_var(save_data)
-	print("Game Saved successfully!")
-	post_to_log("Game Saved to Hard Drive!")
-
-func load_game():
-	if not FileAccess.file_exists(SAVE_PATH):
-		print("No save file found!")
-		return
-		
-	var file = FileAccess.open(SAVE_PATH, FileAccess.READ)
-	var save_data = file.get_var()
-	
-	ink_count = save_data.get("ink_count", ink_count)
-	player_level = save_data.get("player_level", player_level)
-	player_exp = save_data.get("player_exp", player_exp)
-	exp_to_next_level = save_data.get("exp_to_next_level", exp_to_next_level)
-	my_collection = save_data.get("my_collection", my_collection)
-	discovered_echoes = save_data.get("discovered_echoes", discovered_echoes)
-	library_exhibits = save_data.get("library_exhibits", library_exhibits)
-	deployed_echoes = save_data.get("deployed_echoes", deployed_echoes)
-	boss_level = save_data.get("boss_level", boss_level)
-	boss_hp = save_data.get("boss_hp", boss_hp)
-	boss_atk = save_data.get("boss_atk", boss_atk)
-	upgrades_unlocked = save_data.get("upgrades_unlocked", upgrades_unlocked)
-	
-	var saved_time = save_data.get("last_save_time", 0.0)
-	var total_offline_ink = 0.0
-	
-	if saved_time > 0:
-		var seconds_away = Time.get_unix_time_from_system() - saved_time
-		
-		for key in library_exhibits.keys():
-			var exhibit = library_exhibits[key]
-			if not exhibit["unlocked"]: continue
-			
-			var exhibit_rate = 0.0
-			for echo_name in exhibit["contents"]:
-				var base = get_base_name(echo_name)
-				if echo_database.has(base):
-					exhibit_rate += echo_database[base].ink_rate
-			
-			if exhibit_rate > 0:
-				var possible_ink = exhibit_rate * seconds_away
-				var space_left = exhibit["ink_cap"] - exhibit["ink_stored"]
-				
-				if possible_ink > space_left:
-					possible_ink = space_left
-					
-				if possible_ink > 0:
-					exhibit["ink_stored"] += possible_ink
-					total_offline_ink += possible_ink
-
-	selected_echo_name = ""
-	library_roster_selected_name = ""
-	inspected_exhibit_key = ""
-	
-	update_ui()
-	print("Game Loaded successfully!")
-	post_to_log("Game Loaded Successfully!")
-	if total_offline_ink > 0:
-		post_to_log("[color=cyan]Offline Progress: Pedestals generated " + str(int(total_offline_ink)) + " Ink![/color]")
-
-func _on_area_2d_mouse_entered():
-	tide_1.modulate = Color(1.5, 1.5, 2.0)
-
-func _on_area_2d_mouse_exited():
-	tide_1.modulate = Color(1, 1, 1)
+    # Make the icon bob up and down forever
+    var bounce = create_tween().set_loops()
+    bounce.tween_property(%CollectIcon, "position:y", %CollectIcon.position.y - 10, 1.2).set_trans(Tween.TRANS_SINE)
+    bounce.tween_property(%CollectIcon, "position:y", %CollectIcon.position.y, 1.2).set_trans(Tween.TRANS_SINE)
 
 
 
-func _on_close_button_pressed():
-	print("Closing SanctuaryUI...")
-	%SanctuaryUI.visible = false
 
-func _on_pyre_1_area_2d_mouse_entered():
-	print("I AM TOUCHING THE FORGE!")
-	%"pyre 1".modulate = Color(2.0, 1.2, 0.8)
+func _on_core_updated():
+    if Engine.is_editor_hint(): return 
+    
+    var core = get_tree().root.find_child("ReverieCore", true, false)
+    if core and core.library_exhibits.has(habitat_type):
+        var exhibit = core.library_exhibits[habitat_type]
+        var current_count = exhibit["contents"].size()
+        
+        # ONLY refresh visuals if a new wisp was added or one was removed
+        if current_count != last_seen_wisp_count:
+            refresh_visuals(current_count)
+            last_seen_wisp_count = current_count
+        
+        # The Icon can still update visibility every second, that's fine!
+        %CollectIcon.visible = (exhibit["ink_stored"] >= 10)
 
-func _on_pyre_1_area_2d_mouse_exited():
-	print("I LEFT THE FORGE!")
-	%"pyre 1".modulate = Color(1, 1, 1)
+func refresh_visuals(count: int):
+    # Clear old ones
+    for child in get_children():
+        if child.is_in_group("resident_wisps"):
+            child.queue_free()
+            
+    var core = get_tree().root.find_child("ReverieCore", true, false)
+    var contents = core.library_exhibits[habitat_type]["contents"]
 
-func _on_pyre_1_area_2d_input_event(_viewport, event, _shape_idx):
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		print("I CLICKED THE FORGE!")
-		%SanctuaryUI.visible = true
-		%TabContainer.current_tab = 1
-		update_ui()
-
-func _on_buy_tide_button_pressed():
-	var slot = find_free_slot()
-	if slot != -1:
-		start_job(slot, "Tide Echo", 5.0) 
-
-func _on_buy_pyre_button_pressed():
-	var slot = find_free_slot()
-	if slot != -1:
-		start_job(slot, "Pyre Echo", 5.0)
-		
-func get_max_hatchery_slots():
-	var slots = 1
-	if player_level >= 3: slots = 2
-	if player_level >= 10: slots = 3
-	if player_level >= 25: slots = 4
-	return slots
-
-
-func _on_place_button_pressed():
-	if active_waiting_wisp_name != "" and active_waiting_wisp_node != null:
-		# 1. Store the name for placement
-		library_roster_selected_name = active_waiting_wisp_name
-		
-		# 2. IMPORTANT: We need to find which habitat this wisp belongs to!
-		# For now, let's assume Tide Echoes go to Tide, Pyre to Pyre.
-		var type = ""
-		if "Tide" in active_waiting_wisp_name: type = "Tide"
-		elif "Pyre" in active_waiting_wisp_name: type = "Pyre"
-		
-		# 3. Add it to the actual exhibit data
-		if type != "" and library_exhibits.has(type):
-			library_exhibits[type]["contents"].append(active_waiting_wisp_name)
-			print("Added ", active_waiting_wisp_name, " to ", type, " Exhibit!")
-		
-		# 4. Clean up the hatchery
-		var slot_idx = active_waiting_wisp_node.get_meta("slot_idx")
-		hatchery_slots_active[slot_idx] = false
-		active_waiting_wisp_node.queue_free()
-		
-		# 5. UI Cleanup
-		%DecisionPopup.visible = false
-		update_ui() # This tells the habitats to refresh and show the new wisp!
-		
-		active_waiting_wisp_name = ""
-		active_waiting_wisp_node = null
+    for i in range(contents.size()):
+        var echo_name = contents[i]
+        var new_wisp = wisp_scene.instantiate()
+        add_child(new_wisp)
+        new_wisp.add_to_group("resident_wisps")
+        
+        # Position them randomly around the tree
+        new_wisp.position = Vector2(randf_range(-40, 40), randf_range(-50, 10))
+        
+        # Set color based on the echo database in Core
+        var base_name = core.get_base_name(echo_name)
+        if core.echo_database.has(base_name):
+            new_wisp.modulate = core.echo_database[base_name].color
+            
+    
 
 
-func _on_sell_button_pressed() -> void:
-	pass # Replace with function body.
+func _on_click_area_mouse_entered():
+    # Only scale the tree, not the icon or the whole habitat!
+    var tween = create_tween()
+    tween.tween_property(%TreeSprite, "scale", Vector2(1.05, 1.05), 0.1)
+    %TreeSprite.modulate = Color(1.2, 1.2, 1.2)
 
+func _on_click_area_mouse_exited():
+    var tween = create_tween()
+    tween.tween_property(%TreeSprite, "scale", Vector2(1.0, 1.0), 0.1)
+    %TreeSprite.modulate = Color(1, 1, 1)
 
-func _on_economy_timer_timeout():
-	for exhibit_key in library_exhibits.keys():
-		var exhibit = library_exhibits[exhibit_key]
-		var resident_count = exhibit["contents"].size()
-		
-		if resident_count > 0:
-			# Calculate gain (e.g., 1 ink per resident)
-			var gain = resident_count * 1.0
-			
-			# Fill the exhibit's bucket, but stop at the cap
-			exhibit["ink_stored"] = min(exhibit["ink_stored"] + gain, exhibit["ink_cap"])
-	
-	# Tell the trees to check if they should show a "Full" icon
-	ui_updated.emit()
-	
-	# Update the UI labels so you can see the numbers climbing!
-	update_ui()
-	
-# --- HATCHERY INTERACTION ---
+# --- CLICK LOGIC ---
+func _on_click_area_input_event(_viewport, event, _shape_idx):
+    if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+        var core = get_tree().root.find_child("ReverieCore", true, false)
+        if not core: return
+        
+        # JUST OPEN THE NEW TRAY! NO MORE AUTO-HARVEST!
+        if core.has_method("show_habitat_footer"):
+            core.show_habitat_footer(habitat_type)
+            
+        get_viewport().set_input_as_handled()
+        
+        
+        
+        # Add this inside your Tree's script!
 
-func _on_hatchery_books_input_event(_viewport, event, _shape_idx):
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		print("Books clicked! Opening Hatchery...")
-		open_sanctuary("Hatchery")
-
-# --- MASTER UI FUNCTION ---
-
-func open_sanctuary(tab_name: String):
-	print("Opening Sanctuary UI for: ", tab_name)
-	
-	if has_node("%SanctuaryUI"):
-		%SanctuaryUI.visible = true
-		
-		# Match the tab name to your TabContainer indices
-		# (Double check these numbers match your actual tabs!)
-		match tab_name:
-			"Tide":
-				%TabContainer.current_tab = 3 # Library/Stats
-			"Pyre":
-				%TabContainer.current_tab = 1 # Pyre Tab
-			"Hatchery":
-				%TabContainer.current_tab = 0 # Shop/Hatchery
-	else:
-		print("❌ ERROR: Could not find SanctuaryUI node!")
-		
-		
-		
-		
-func show_habitat_footer(habitat_key: String):
-	# Make sure the key exists in our data
-	if not library_exhibits.has(habitat_key): return
-	
-	var data = library_exhibits[habitat_key]
-	
-	# 1. Update the Header Label
-	%HabitatNameLabel.text = data["name"]
-	
-	# 2. Clear the old icons from the HBoxContainer
-	for child in %HabitatMenuBoxContainer.get_children():
-		child.queue_free()
-	
-	# 3. Build Resident Portraits
-	for wisp_name in data["contents"]:
-		var portrait = create_portrait_button(wisp_name)
-		%HabitatMenuBoxContainer.add_child(portrait)
-	
-	# 4. Add the [+] "Add" Button if there's room
-	if data["contents"].size() < data["capacity"]:
-		var add_btn = create_action_button("Add")
-		add_btn.pressed.connect(_on_add_to_habitat_pressed.bind(habitat_key))
-		%HabitatMenuBoxContainer.add_child(add_btn)
-		
-	# 5. Add a "Collect" button
-	var collect_btn = create_action_button("Collect")
-	# We can link this to the same collect logic you already have!
-	collect_btn.pressed.connect(_on_collect_button_pressed)
-	%HabitatMenuBoxContainer.add_child(collect_btn)
-	
-	# ... (your other button code) ...
-
-	# 6. Add a "Close" button
-	var close_btn = create_action_button("Close")
-	close_btn.pressed.connect(func(): %HabitatMenu.visible = false)
-	%HabitatMenuBoxContainer.add_child(close_btn)
-	
-	# Finally, make the whole menu visible
-	%HabitatMenu.visible = true
-	
-	
-	
-	
-	
-# --- FOOTER UI HELPERS ---
-
-# 1. Creates the little square buttons for the wisps living in the tree
-func create_portrait_button(wisp_name: String) -> Button:
-	var btn = Button.new()
-	btn.custom_minimum_size = Vector2(80, 80)
-	
-	# Add a color square to show which wisp it is
-	var color_patch = ColorRect.new()
-	color_patch.size = Vector2(60, 40)
-	color_patch.position = Vector2(10, 10)
-	color_patch.mouse_filter = Control.MOUSE_FILTER_IGNORE # Let clicks pass to the button
-	
-	var base = get_base_name(wisp_name)
-	if echo_database.has(base):
-		color_patch.color = echo_database[base].color
-	
-	btn.add_child(color_patch)
-	btn.text = "\n\n" + wisp_name.split(" ")[0] # Put name under the color
-	
-	# When clicked, show this specific wisp's stats!
-	btn.pressed.connect(func():
-		selected_echo_name = wisp_name
-		open_sanctuary("Tide") # Open the Library/Stats tab
-	)
-	
-	return btn
-
-# 2. Creates the generic action buttons (Add, Move, Sell, Collect)
-func create_action_button(btn_text: String, icon_path: String = "") -> Button:
-	var btn = Button.new()
-	btn.custom_minimum_size = Vector2(80, 80)
-	btn.text = btn_text
-	
-	# If you have icons later, we can add code here to load them
-	# For now, just having the text is enough to test!
-	return btn
-
-# 3. Handles what happens when you click the [+] Add button in the tray
-func _on_add_to_habitat_pressed(habitat_key: String):
-	print("Adding a resident to: ", habitat_key)
-	inspected_exhibit_key = habitat_key
-	open_sanctuary("Hatchery") # Open the menu so they can pick a wisp
+func make_wisp_wander(wisp_sprite: Node2D):
+    # Pick a random spot near the tree (Change the 50 to make the wander area bigger/smaller)
+    var random_x = randf_range(-50, 50) 
+    var random_y = randf_range(-30, 30)
+    var target_position = Vector2(random_x, random_y)
+    
+    # Calculate how long the walk should take so they move at a steady speed
+    var distance = wisp_sprite.position.distance_to(target_position)
+    var walk_time = distance / 20.0 # Speed of the wisp
+    
+    # Flip the sprite left or right depending on which way it's walking!
+    if target_position.x < wisp_sprite.position.x:
+        wisp_sprite.scale.x = -abs(wisp_sprite.scale.x) # Face Left
+    else:
+        wisp_sprite.scale.x = abs(wisp_sprite.scale.x) # Face Right
+    
+    # Create the movement animation
+    var walk_tween = create_tween()
+    walk_tween.tween_property(wisp_sprite, "position", target_position, walk_time).set_trans(Tween.TRANS_SINE)
+    
+    # Wait a random amount of time (1 to 3 seconds), then wander again!
+    var pause_time = randf_range(1.0, 3.0)
+    walk_tween.tween_interval(pause_time)
+    walk_tween.finished.connect(make_wisp_wander.bind(wisp_sprite))
